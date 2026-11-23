@@ -4,6 +4,7 @@ Streamlit app that compares an organization profile against grant guidelines,
 returns a fit/eligibility assessment, and drafts a 7-part application outline.
 """
 
+import html
 import json
 
 import anthropic
@@ -80,14 +81,78 @@ def load_sample() -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 def get_api_key() -> str:
+    """Read the key from Streamlit secrets, else from a sidebar password field."""
     try:
         key = st.secrets.get("ANTHROPIC_API_KEY", "")
     except Exception:  # no secrets.toml present
         key = ""
     if key:
-        st.sidebar.success("API key loaded from secrets.")
+        status_badge("ok", "🔑 API key loaded from secrets")
         return key
-    return st.sidebar.text_input("Anthropic API Key", type="password")
+    key = st.sidebar.text_input("Anthropic API Key", type="password")
+    if key:
+        status_badge("ok", "🔑 API key entered manually")
+    else:
+        status_badge("warn", "⚠️ No API key yet — paste one above")
+    return key
+
+
+# ---------------------------------------------------------------------------
+# Styling helpers
+# ---------------------------------------------------------------------------
+CSS = """
+<style>
+.gm-hero {
+  background: linear-gradient(135deg, #1E6B52 0%, #2F8A6C 100%);
+  color: #FFFFFF; border-radius: 14px; padding: 1.4rem 1.6rem; margin-bottom: 1.2rem;
+}
+.gm-hero h1 { color: #FFFFFF; font-size: 1.9rem; margin: 0 0 .3rem 0; padding: 0; }
+.gm-hero p { color: rgba(255,255,255,.9); margin: 0; font-size: 1.02rem; }
+.gm-badge {
+  display: inline-block; padding: .3rem .85rem; border-radius: 999px;
+  font-weight: 700; font-size: .95rem; border: 1px solid transparent;
+}
+.gm-high { background: rgba(30,107,82,.14); color: #1E6B52; border-color: rgba(30,107,82,.35); }
+.gm-moderate { background: rgba(217,145,0,.16); color: #8A5A00; border-color: rgba(217,145,0,.4); }
+.gm-low { background: rgba(200,50,80,.13); color: #A12544; border-color: rgba(200,50,80,.35); }
+.gm-status { display: block; padding: .45rem .7rem; border-radius: 8px; font-size: .9rem; margin: .3rem 0 .6rem 0; }
+.gm-status-ok { background: rgba(30,107,82,.12); color: #1E6B52; }
+.gm-status-warn { background: rgba(217,145,0,.15); color: #8A5A00; }
+.gm-callout {
+  border-left: 4px solid #1E6B52; background: rgba(30,107,82,.07);
+  padding: .6rem .9rem; border-radius: 6px; margin: .2rem 0 .7rem 0;
+}
+.gm-list { margin: 0 0 .4rem 0; padding-left: 1.2rem; }
+.gm-list li { margin-bottom: .35rem; line-height: 1.5; }
+.gm-fill {
+  background: rgba(245,180,0,.30); color: inherit; padding: 0 .3rem;
+  border-radius: 4px; border: 1px dashed rgba(180,120,0,.6); font-weight: 600; white-space: nowrap;
+}
+.gm-muted { opacity: .7; font-style: italic; }
+</style>
+"""
+
+FIT_CLASS = {"High Fit": "gm-high", "Moderate Fit": "gm-moderate", "Low Fit": "gm-low"}
+
+
+def status_badge(kind: str, text: str) -> None:
+    st.sidebar.markdown(f'<span class="gm-status gm-status-{kind}">{html.escape(text)}</span>', unsafe_allow_html=True)
+
+
+def fmt(text: str) -> str:
+    """HTML-escape model text and highlight the TO FILL IN placeholder."""
+    safe = html.escape(str(text))
+    return safe.replace(html.escape(PLACEHOLDER), f'<mark class="gm-fill">{html.escape(PLACEHOLDER)}</mark>')
+
+
+def html_list(items: list, empty: str) -> str:
+    if not items:
+        return f'<p class="gm-muted">{html.escape(empty)}</p>'
+    return '<ul class="gm-list">' + "".join(f"<li>{fmt(i)}</li>" for i in items) + "</ul>"
+
+
+def fit_badge(rating: str) -> str:
+    return f'<span class="gm-badge {FIT_CLASS.get(rating, "gm-moderate")}">{html.escape(rating)}</span>'
 
 
 def extract_pdf_text(uploaded_file) -> tuple[str, int]:
@@ -209,31 +274,59 @@ def to_markdown(org_name: str, data: dict) -> str:
 
 
 def render_result(org_name: str, data: dict) -> None:
-    st.header("Fit & Eligibility Gatekeeper")
     rating = data["fit_rating"]
-    badge = {"High Fit": st.success, "Moderate Fit": st.warning, "Low Fit": st.error}.get(rating, st.info)
-    badge(f"**Fit Rating:** {rating}")
-    st.markdown(f"**Fit Rationale:** {data['fit_rationale']}")
+    flags = data["eligibility_flags"]
+    ready = sum(1 for k in SECTION_KEYS if data["outline"][k]["draft_starter_points"])
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Eligibility Flags & Missing Info")
-        st.markdown("\n".join(f"- {f}" for f in data["eligibility_flags"]) or "_None identified._")
-    with col2:
-        st.subheader("Key Dates & Requirements")
-        st.markdown("\n".join(f"- {r}" for r in data["key_dates_requirements"]) or "_None found._")
+    st.header("Fit & Eligibility Gatekeeper")
+    with st.container(border=True):
+        st.markdown(f"**Fit Assessment** &nbsp; {fit_badge(rating)}", unsafe_allow_html=True)
+        st.markdown(f"<p>{fmt(data['fit_rationale'])}</p>", unsafe_allow_html=True)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Fit Rating", rating)
+        c2.metric("Flags / Missing Info", len(flags))
+        c3.metric("Outline Sections Ready", f"{ready} / {len(SECTION_KEYS)}")
 
-    st.header("7-Part Application Outline")
-    for key, title in zip(SECTION_KEYS, SECTION_TITLES):
-        sec = data["outline"][key]
-        st.subheader(title)
-        st.markdown(f"**What to cover:** {sec['what_to_cover']}")
-        st.markdown("\n".join(f"- {p}" for p in sec["draft_starter_points"]))
+    tab_fit, tab_outline, tab_export = st.tabs(
+        ["Fit & Requirements", "Application Outline (7 Sections)", "Export & Copy"]
+    )
+    with tab_fit:
+        col1, col2 = st.columns(2)
+        with col1, st.container(border=True):
+            st.subheader("⚠️ Eligibility Flags & Missing Info")
+            st.markdown(html_list(flags, "None identified."), unsafe_allow_html=True)
+        with col2, st.container(border=True):
+            st.subheader("📅 Key Dates & Requirements")
+            st.markdown(html_list(data["key_dates_requirements"], "None found in guidelines."), unsafe_allow_html=True)
 
-    md = to_markdown(org_name, data)
-    st.divider()
-    st.download_button("Download Outline (.md)", md, file_name="grant_outline.md", mime="text/markdown")
-    with st.expander("Raw Markdown (copy)"):
+    with tab_outline:
+        st.caption(
+            "Highlighted markers like "
+            f'<mark class="gm-fill">{html.escape(PLACEHOLDER)}</mark> show where you must add verified local data.',
+            unsafe_allow_html=True,
+        )
+        for key, title in zip(SECTION_KEYS, SECTION_TITLES):
+            sec = data["outline"][key]
+            with st.container(border=True):
+                st.subheader(title)
+                st.markdown(
+                    f'<div class="gm-callout"><strong>What to cover:</strong> {fmt(sec["what_to_cover"])}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown("**Draft starter points**")
+                st.markdown(html_list(sec["draft_starter_points"], "No starter points returned."), unsafe_allow_html=True)
+
+    with tab_export:
+        md = to_markdown(org_name, data)
+        st.download_button(
+            "Download Outline (.md)",
+            md,
+            file_name="grant_application_outline.md",
+            mime="text/markdown",
+            type="primary",
+            width="stretch",
+        )
+        st.caption("Or copy the raw Markdown below (use the copy icon in the top-right corner).")
         st.code(md, language="markdown")
 
 
@@ -242,52 +335,77 @@ def render_result(org_name: str, data: dict) -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     st.set_page_config(page_title="Grant-Matcher & Summarizer", page_icon="📝", layout="wide")
-    st.title("📝 Nonprofit Grant-Matcher & Summarizer")
-    st.caption("Check fit against a grant's guidelines and get a structured application outline.")
-
-    api_key = get_api_key()
-    st.sidebar.caption("Your key is used only for this session and never stored.")
-
-    st.button("Load Sample Pantry + Grant", on_click=load_sample)
-
-    st.header("Organization Profile")
-    org_name = st.text_input("Organization Name", key="org_name")
-    org_mission = st.text_area("Mission / Core Programs / Target Population", key="org_mission", height=150)
-    org_capacity = st.text_area(
-        "Capacity / Geography / Funding Constraints",
-        key="org_capacity",
-        height=150,
-        help="e.g., team size, volunteer base, service area, award range or budget constraints",
+    st.markdown(CSS, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="gm-hero"><h1>📝 Nonprofit Grant-Matcher &amp; Summarizer</h1>'
+        "<p>Check your fit against a grant's guidelines and get a structured, "
+        "ready-to-draft application outline.</p></div>",
+        unsafe_allow_html=True,
     )
 
-    st.header("Grant Guidelines")
-    pasted = st.text_area("Paste grant guidelines", key="guidelines", height=220)
-    pdf = st.file_uploader("…and/or upload guidelines PDF", type=["pdf"])
-
-    pdf_text = ""
-    if pdf is not None:
-        try:
-            pdf_text, n_pages = extract_pdf_text(pdf)
-            if n_pages > LARGE_PDF_PAGES or len(pdf_text) > MAX_GUIDELINE_CHARS:
-                st.warning(
-                    f"Large PDF detected ({n_pages} pages, {len(pdf_text):,} characters). "
-                    f"Guidelines will be capped at {MAX_GUIDELINE_CHARS:,} characters to control "
-                    "token usage — consider pasting only the relevant sections."
-                )
-            if not pdf_text:
-                st.warning("No extractable text found in this PDF (it may be scanned). Please paste the text instead.")
-        except Exception as exc:
-            st.error(f"Could not read the PDF: {exc}")
-
-    combined = "\n\n".join(t for t in (pasted.strip(), pdf_text) if t)
-    if len(combined) > MAX_GUIDELINE_CHARS:
-        st.info(
-            f"Combined guidelines are {len(combined):,} characters; only the first "
-            f"{MAX_GUIDELINE_CHARS:,} will be sent to the model."
+    with st.sidebar:
+        st.header("⚙️ Setup")
+    api_key = get_api_key()
+    with st.sidebar:
+        st.caption("Your key is used only for this session and never stored.")
+        st.divider()
+        st.button("Load Sample Pantry + Grant", on_click=load_sample, width="stretch")
+        st.caption("Fills in a sample food pantry and grant so you can try the app instantly.")
+        st.divider()
+        st.subheader("How it works")
+        st.markdown(
+            "1. **Describe your nonprofit**: mission, programs, capacity.\n"
+            "2. **Add grant guidelines**: paste text and/or upload a PDF.\n"
+            "3. **Analyze**: review the fit check, then export the 7-part outline."
         )
-        combined = combined[:MAX_GUIDELINE_CHARS]
 
-    if st.button("Analyze Fit & Generate Outline", type="primary"):
+    with st.container(border=True):
+        st.subheader("1. Nonprofit Mission Profile")
+        st.caption("Who you are, who you serve, and what limits your capacity.")
+        org_name = st.text_input("Organization Name", key="org_name")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            org_mission = st.text_area("Mission / Core Programs / Target Population", key="org_mission", height=170)
+        with col_b:
+            org_capacity = st.text_area(
+                "Capacity / Geography / Funding Constraints",
+                key="org_capacity",
+                height=170,
+                help="e.g., team size, volunteer base, service area, award range or budget constraints",
+            )
+
+    with st.container(border=True):
+        st.subheader("2. Grant Guidelines")
+        st.caption(
+            f"Paste the funder's guidelines, upload a PDF, or both. Up to {MAX_GUIDELINE_CHARS:,} characters are analyzed."
+        )
+        pasted = st.text_area("Paste grant guidelines", key="guidelines", height=220)
+        pdf = st.file_uploader("…and/or upload guidelines PDF", type=["pdf"])
+
+        pdf_text = ""
+        if pdf is not None:
+            try:
+                pdf_text, n_pages = extract_pdf_text(pdf)
+                if n_pages > LARGE_PDF_PAGES or len(pdf_text) > MAX_GUIDELINE_CHARS:
+                    st.warning(
+                        f"Large PDF detected ({n_pages} pages, {len(pdf_text):,} characters). "
+                        f"Guidelines will be capped at {MAX_GUIDELINE_CHARS:,} characters to control "
+                        "token usage — consider pasting only the relevant sections."
+                    )
+                if not pdf_text:
+                    st.warning("No extractable text found in this PDF (it may be scanned). Please paste the text instead.")
+            except Exception as exc:
+                st.error(f"Could not read the PDF: {exc}")
+
+        combined = "\n\n".join(t for t in (pasted.strip(), pdf_text) if t)
+        if len(combined) > MAX_GUIDELINE_CHARS:
+            st.info(
+                f"Combined guidelines are {len(combined):,} characters; only the first "
+                f"{MAX_GUIDELINE_CHARS:,} will be sent to the model."
+            )
+            combined = combined[:MAX_GUIDELINE_CHARS]
+
+    if st.button("Analyze Fit & Generate Outline", type="primary", width="stretch"):
         if not api_key:
             st.error("Please provide an Anthropic API key in the sidebar.")
         elif not (org_name.strip() and org_mission.strip()):
